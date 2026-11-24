@@ -336,6 +336,8 @@ details.done li{display:flex;align-items:center;gap:.7rem;padding:.5rem 0;border
 .pcard .chg input{width:20px;height:20px;accent-color:var(--accent);margin-top:.2rem;flex:none}
 .toast{position:fixed;z-index:60;left:50%;bottom:calc(88px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);padding:.6rem 1.1rem;border-radius:999px;font-weight:500;max-width:90vw}
 .foot{color:var(--muted);font-size:.8125rem}
+.acct{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .6rem}.acct .btn-ghost{text-decoration:underline}
+.w-acct{grid-column:1/-1;font-size:.85rem;color:var(--muted);display:flex;flex-wrap:wrap;align-items:center;gap:.2rem}.w-acct .btn-ghost{text-decoration:underline;color:var(--accent);padding:.2rem .3rem;min-height:0}
 
 /* welcome screen */
 body.welcoming .wrap,body.welcoming .fab{display:none}
@@ -442,6 +444,7 @@ body.welcoming .wrap,body.welcoming .fab{display:none}
       <div class="field"><label class="lbl" for="w-cur">Currency</label><select id="w-cur"></select></div>
       <button class="btn big" type="submit">Get started</button>
       <button class="btn-ghost" type="button" id="w-explore" hidden>Explore with examples first</button>
+      <p class="w-acct" id="w-acct" hidden>Already have an account? <button class="btn-ghost" type="button" id="w-signin">Sign in with Google</button></p>
     </form>
     <ul class="w-feats">
       <li><span class="wico"><span data-ico="sparkle" data-size="18"></span></span><span><b>Tell the AI</b> or send a photo</span></li>
@@ -669,6 +672,7 @@ body.welcoming .wrap,body.welcoming .fab{display:none}
   </section>
 
   <p class="foot" id="sync" role="status"></p>
+  <div class="acct" id="acct" hidden><span class="foot" id="acct-msg"></span><button class="btn-ghost" type="button" id="acct-btn">Sign in with Google</button></div>
   <button class="btn-ghost" type="button" id="show-welcome" style="align-self:flex-start">Show welcome screen</button>
 </div>
 
@@ -1581,28 +1585,85 @@ setTimeout(()=>{ringReady=true;renderMonth()},120);
 setSync('Saved in this browser.');
 showWelcome();
 initAI();
+/* ---------- saving to an account: shared by Claude's own storage and Google sign-in ---------- */
+function subscribe(r,opts){
+  opts=opts||{};ref=r;lastRaw='';
+  clearTimeout(loadTimer);
+  loadTimer=setTimeout(()=>setSync("Cannot reach your account yet. Showing this browser's copy."),10000);
+  let backedUp=false;
+  return r.onSnapshot(snap=>{
+    if(snap.metadata.hasPendingWrites) return;
+    if(!snap.metadata.fromCache) clearTimeout(loadTimer);
+    if(snap.exists){
+      const d=snap.data(),raw=stable(d);
+      if(!snap.metadata.fromCache) setSync('Saved to your account and this browser.');
+      if(busy) return;
+      if(needsFresh(d)){S=seed();syncStatic();renderAll();showWelcome();lsWrite();queueSave();return}
+      if(raw===lastRaw) return;
+      if(opts.backup&&!backedUp){backedUp=true;try{localStorage.setItem(LS_KEY+'-before-signin',JSON.stringify(S))}catch(e){}}
+      lastRaw=raw;S=normalize(d);syncStatic();renderAll();showWelcome();lsWrite();
+    }else if(!snap.metadata.fromCache){flush()}
+  },()=>{setSync('Could not reach your account. Changes stay in this browser.')});
+}
 (async function connect(){
   try{
     if(!window.claude||!claude.use) return;
     const user=await claude.use('user'),dbns=await claude.use('db');
     if(!user||!dbns) return;
     const id=await user.id();if(!id) return;
-    ref=dbns.doc('data/users/'+id+'/ledger');
-    loadTimer=setTimeout(()=>setSync("Cannot reach your account yet. Showing this browser's copy."),10000);
-    ref.onSnapshot(snap=>{
-      if(snap.metadata.hasPendingWrites) return;
-      if(!snap.metadata.fromCache) clearTimeout(loadTimer);
-      if(snap.exists){
-        const d=snap.data(),raw=stable(d);
-        if(!snap.metadata.fromCache) setSync('Saved to your account and this browser.');
-        if(busy) return;
-        if(needsFresh(d)){S=seed();syncStatic();renderAll();showWelcome();lsWrite();queueSave();return}
-        if(raw===lastRaw) return;
-        lastRaw=raw;S=normalize(d);syncStatic();renderAll();showWelcome();lsWrite();
-      }else if(!snap.metadata.fromCache&&!S.examples){flush()}
-      else if(!snap.metadata.fromCache&&S.examples){flush()}
-    },()=>{setSync('Could not reach your account. Changes stay in this browser.')});
+    subscribe(dbns.doc('data/users/'+id+'/ledger'));
   }catch(e){}
+})();
+
+/* ---------- optional Google sign-in (the copy that lives on your phone) ---------- */
+/* Paste your Firebase web config between the braces to switch this on. Leave it null to keep the app local-only. */
+const FIREBASE_CONFIG=null;
+const FB_VER='10.12.2';
+let fb=null,fbUnsub=null;
+const inClaude=!!(window.claude&&window.claude.use);
+function showAcct(signedIn,email){
+  $('#acct').hidden=false;$('#w-acct').hidden=signedIn;
+  $('#acct-msg').textContent=signedIn?'Signed in as '+email+'. Your data is saved to your account.':'Not signed in. Your data stays on this phone.';
+  $('#acct-btn').textContent=signedIn?'Sign out':'Sign in with Google';
+  $('#acct-btn').dataset.mode=signedIn?'out':'in';
+}
+function onUser(user){
+  if(fbUnsub){try{fbUnsub()}catch(e){}fbUnsub=null}
+  if(!user){ref=null;busy=false;clearTimeout(loadTimer);setSync('Saved in this browser.');showAcct(false);return}
+  const {F,db}=fb,docRef=F.doc(db,'users',user.uid,'ledger','main');
+  showAcct(true,user.email||'your Google account');
+  fbUnsub=subscribe({
+    set:obj=>F.setDoc(docRef,{json:JSON.stringify(obj),updatedAt:Date.now()}),
+    onSnapshot:(ok,bad)=>F.onSnapshot(docRef,{includeMetadataChanges:true},s=>{
+      const raw=s.exists()?s.data():null;
+      let data=null;if(raw&&raw.json){try{data=JSON.parse(raw.json)}catch(e){}}
+      ok({exists:!!data,data:()=>data,metadata:s.metadata});
+    },bad)
+  },{backup:true});
+}
+async function googleSignIn(){
+  if(!fb) return;
+  const provider=new fb.A.GoogleAuthProvider();
+  try{await fb.A.signInWithPopup(fb.auth,provider)}
+  catch(e){
+    const c=e&&e.code;
+    if(c==='auth/popup-blocked'||c==='auth/operation-not-supported-in-this-environment'){try{await fb.A.signInWithRedirect(fb.auth,provider)}catch(x){toast('Could not sign in. Try again.')}}
+    else if(c!=='auth/popup-closed-by-user'&&c!=='auth/cancelled-popup-request') toast('Could not sign in. Try again.');
+  }
+}
+$('#acct-btn').addEventListener('click',()=>{if($('#acct-btn').dataset.mode==='out'){if(fb) fb.A.signOut(fb.auth)}else googleSignIn()});
+$('#w-signin').addEventListener('click',googleSignIn);
+(async function initFirebase(){
+  if(inClaude||!FIREBASE_CONFIG) return;
+  showAcct(false);
+  try{
+    const base='https://www.gstatic.com/firebasejs/'+FB_VER+'/';
+    const [app,A,F]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
+    const a=app.initializeApp(FIREBASE_CONFIG);
+    fb={A,F,auth:A.getAuth(a),db:F.getFirestore(a)};
+    A.onAuthStateChanged(fb.auth,onUser);
+    A.getRedirectResult(fb.auth).catch(()=>{});
+  }catch(e){$('#acct-msg').textContent='Sign-in is not available right now. Your data stays on this phone.';$('#acct-btn').hidden=true;$('#w-acct').hidden=true}
 })();
 })();
 </script><script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
