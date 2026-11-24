@@ -1617,7 +1617,14 @@ function subscribe(r,opts){
 
 /* ---------- optional Google sign-in (the copy that lives on your phone) ---------- */
 /* Paste your Firebase web config between the braces to switch this on. Leave it null to keep the app local-only. */
-const FIREBASE_CONFIG=null;
+const FIREBASE_CONFIG={
+  apiKey:"AIzaSyDn7pq70n8auSFp-5RkU0LkVgWxsVqtJBc",
+  authDomain:"priority-ledger-26967.firebaseapp.com",
+  projectId:"priority-ledger-26967",
+  storageBucket:"priority-ledger-26967.firebasestorage.app",
+  messagingSenderId:"240459259422",
+  appId:"1:240459259422:web:caf0e5d21501a47a43180f"
+};
 const FB_VER='10.12.2';
 let fb=null,fbUnsub=null;
 const inClaude=!!(window.claude&&window.claude.use);
